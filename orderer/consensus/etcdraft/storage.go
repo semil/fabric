@@ -116,6 +116,14 @@ func CreateStorage(
 	}, nil
 }
 
+func (rs *RaftStorage) GetWAL() *wal.WAL {
+	return rs.wal
+}
+
+func (rs *RaftStorage) GetWALDir() string {
+	return rs.walDir
+}
+
 // ListSnapshots returns a list of RaftIndex of snapshots stored on disk.
 // If a file is corrupted, rename the file.
 func ListSnapshots(logger *flogging.FabricLogger, snapDir string) []uint64 {
@@ -241,6 +249,7 @@ func (rs *RaftStorage) Snapshot() raftpb.Snapshot {
 
 // Store persists etcd/raft data
 func (rs *RaftStorage) Store(entries []raftpb.Entry, hardstate raftpb.HardState, snapshot raftpb.Snapshot) error {
+	rs.lg.Info("!!! Store was called")
 	if err := rs.wal.Save(hardstate, entries); err != nil {
 		return err
 	}

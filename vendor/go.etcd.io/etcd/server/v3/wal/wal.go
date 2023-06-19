@@ -93,6 +93,7 @@ type WAL struct {
 
 	locks []*fileutil.LockedFile // the locked files the WAL holds (the name is increasing)
 	fp    *filePipeline
+	saveCalledWithEntriesCounter uint64
 }
 
 // Create creates a WAL ready for appending records. The given metadata is
@@ -236,6 +237,10 @@ func Create(lg *zap.Logger, dirpath string, metadata []byte) (*WAL, error) {
 
 func (w *WAL) SetUnsafeNoFsync() {
 	w.unsafeNoSync = true
+}
+
+func (w *WAL) walId() string {
+	return w.dir
 }
 
 func (w *WAL) cleanupWAL(lg *zap.Logger) {
@@ -700,6 +705,7 @@ func Verify(lg *zap.Logger, walDir string, snap walpb.Snapshot) (*raftpb.HardSta
 // cut first creates a temp wal file and writes necessary headers into it.
 // Then cut atomically rename temp wal file to a wal file.
 func (w *WAL) cut() error {
+	fmt.Printf(":: cut called\n")
 	// close old wal file; truncate to avoid wasting space if an early cut
 	off, serr := w.tail().Seek(0, io.SeekCurrent)
 	if serr != nil {
@@ -784,6 +790,7 @@ func (w *WAL) cut() error {
 }
 
 func (w *WAL) sync() error {
+	fmt.Printf(":: sync called\n")
 	if w.encoder != nil {
 		if err := w.encoder.flush(); err != nil {
 			return err
@@ -811,6 +818,7 @@ func (w *WAL) sync() error {
 }
 
 func (w *WAL) Sync() error {
+	fmt.Printf(":: Sync called\n")
 	return w.sync()
 }
 
@@ -889,6 +897,7 @@ func (w *WAL) Close() error {
 }
 
 func (w *WAL) saveEntry(e *raftpb.Entry) error {
+	fmt.Printf(":: saveEntry called with: %+v\n", e)
 	// TODO: add MustMarshalTo to reduce one allocation.
 	b := pbutil.MustMarshal(e)
 	rec := &walpb.Record{Type: entryType, Data: b}
@@ -900,6 +909,8 @@ func (w *WAL) saveEntry(e *raftpb.Entry) error {
 }
 
 func (w *WAL) saveState(s *raftpb.HardState) error {
+	id := w.walId()
+	fmt.Printf("::%s saveState called with: %+v\n", id, s)
 	if raft.IsEmptyHardState(*s) {
 		return nil
 	}
@@ -910,11 +921,14 @@ func (w *WAL) saveState(s *raftpb.HardState) error {
 }
 
 func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
+	id := w.walId()
+	fmt.Printf("::%s Save called with hardState=%+v entries=%+v \n", id, st, ents)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	// short cut, do not call sync
 	if raft.IsEmptyHardState(st) && len(ents) == 0 {
+		fmt.Printf(":: Save short cut >>>>>>>>>>>>>>>>>>>>> \n")
 		return nil
 	}
 
@@ -938,13 +952,21 @@ func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
 		if mustSync {
 			return w.sync()
 		}
+		//w.lg.Error("!!!!!!!!!!!!!!!!!!!!")
+		w.saveCalledWithEntriesCounter++
 		return nil
 	}
+	c := w.cut()
+	w.saveCalledWithEntriesCounter++
+	return c 
+}
 
-	return w.cut()
+func (w *WAL) GetSaveCalledWithEntriesCounter() uint64 {
+	return w.saveCalledWithEntriesCounter
 }
 
 func (w *WAL) SaveSnapshot(e walpb.Snapshot) error {
+	fmt.Printf(":: SaveSnapshot called with %+v\n", e)
 	if err := walpb.ValidateSnapshotForWrite(&e); err != nil {
 		return err
 	}
@@ -988,6 +1010,18 @@ func (w *WAL) seq() uint64 {
 	return seq
 }
 
+func (w *WAL) SaveToBackup() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	backupDir := fmt.Sprint(w.dir, "-b")
+	copyDir(w.dir, backupDir)
+	return backupDir
+}
+
+func (w *WAL) GetDir() string {
+	return w.dir
+}
+
 func closeAll(lg *zap.Logger, rcs ...io.ReadCloser) error {
 	stringArr := make([]string, 0)
 	for _, f := range rcs {
@@ -1000,4 +1034,74 @@ func closeAll(lg *zap.Logger, rcs ...io.ReadCloser) error {
 		return nil
 	}
 	return errors.New(strings.Join(stringArr, ", "))
+}
+
+func copyDir(sourceDir string, destinationDir string) {
+	// Create the destination directory if it doesn't exist
+	err := os.MkdirAll(destinationDir, 0755)
+	if err != nil {
+		panic(err)
+	}
+
+	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip the source directory itself
+		if path == sourceDir {
+			return nil
+		}
+
+		// Construct the corresponding destination path
+		destPath := filepath.Join(destinationDir, path[len(sourceDir):])
+
+		if info.IsDir() {
+			// Create the corresponding destination directory
+			err := os.MkdirAll(destPath, info.Mode())
+			if err != nil {
+				return err
+			}
+		} else {
+			// Copy the file from source to destination
+			err := copyFile(path, destPath)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Directory copied successfully.")
+}
+
+func copyFile(sourcePath, destPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	if err != nil {
+		return err
+	}
+
+	err = destination.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

@@ -9,10 +9,14 @@ package etcdraft_test
 import (
 	"encoding/pem"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/user"
 	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1787,6 +1791,12 @@ var _ = Describe("Chain", func() {
 				network.elect(1)
 
 				By("Submitting first tx to cut the block")
+				env = &common.Envelope{
+					Payload: marshalOrPanic(&common.Payload{
+						Header: &common.Header{ChannelHeader: marshalOrPanic(&common.ChannelHeader{Type: int32(common.HeaderType_MESSAGE), ChannelId: channelID})},
+						Data:   []byte("AAAAAA"),
+					}),
+				}
 				c1.cutter.SetCutNext(true)
 				err := c1.Order(env, 0)
 				Expect(err).NotTo(HaveOccurred())
@@ -2379,6 +2389,222 @@ var _ = Describe("Chain", func() {
 						Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
 					})
 				})
+
+				It("fsync raft", func() {
+					By("Disconnecting node #3")
+					network.disconnect(c3.id)
+
+					walCounterBeforeWrites := c1.Node.GetStorage().GetWAL().GetSaveCalledWithEntriesCounter()
+					blockNumbersBeforeWrites := 1
+					//fmt.Printf("******** %d", walCounterBeforeWrites)
+
+					By("Writing message #1 to leader (node #1)")
+					c1.cutter.SetCutNext(true)
+					err := c1.Order(createEnvelope("MESSAGE_1", channelID), 0)
+					Expect(err).NotTo(HaveOccurred())
+					for _, c := range []*chain{c1, c2} {
+						Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(blockNumbersBeforeWrites + 1))
+						Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+						Eventually(c.Node.GetStorage().GetWAL().GetSaveCalledWithEntriesCounter(), LongEventualTimeout).Should(Equal(walCounterBeforeWrites + 1))
+					}
+					blockNumbersBeforeWrites++
+					walCounterBeforeWrites++
+					By("Finished writing data block #1 to leader")
+
+					//fmt.Printf("******** %d", c1Wal.GetSaveCalledWithEntriesCounter())
+
+					c2Wal := c2.Node.GetStorage().GetWAL()
+					c2WalBackupDir := c2Wal.SaveToBackup()
+					fmt.Printf("c2WalBackupDir=%s\n", c2WalBackupDir)
+
+					for i := 1; i < 3; i++ {
+						By(fmt.Sprintf("Writing data block #%d to leader", i))
+						c1.cutter.SetCutNext(true)
+						err := c1.Order(createEnvelope(fmt.Sprintf("MESSAGE_%d", i+1), channelID), 0)
+						Expect(err).NotTo(HaveOccurred())
+						for _, c := range []*chain{c1, c2} {
+							Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(blockNumbersBeforeWrites + i))
+							Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+							Eventually(c.Node.GetStorage().GetWAL().GetSaveCalledWithEntriesCounter(), LongEventualTimeout).Should(Equal(walCounterBeforeWrites + uint64(i)))
+						}
+					}
+
+					By("Stop follower #2")
+					network.stop(c2.id)
+
+					By("Swap follower #2 WAL to WAL with 1 message")
+					err = os.RemoveAll(c2Wal.GetDir())
+					err = os.Rename(c2WalBackupDir, c2Wal.GetDir())
+
+					By("Stop the leader #1")
+					network.disconnect(c1.id)
+
+					By("Reconnect follower #3")
+					network.connect(c3.id)
+
+					By("Restart follower #2")
+					c2DataDirSplit := strings.Split(c2Wal.GetDir(), "/")
+					c2DataDir := strings.Join(c2DataDirSplit[:len(c2DataDirSplit)-1], "/")
+					newC2 := newChain(10*time.Second, channelID, c2DataDir, 2, raftMetadata, consenters, cryptoProvider, nil, nil)
+					newC2.init()
+					network.addChain(newC2)
+					newC2.Start()
+
+					By("Ellect follower #2 to be the leader")
+					//newC2.clock.Increment(interval)
+					//c3.clock.Increment(interval)
+					network.elect(newC2.id)
+
+					By("Wait for #3 to receive the messages from #2")
+					Eventually(c3.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(2))
+
+					By("Writing message #4 to node #2")
+					newC2.cutter.SetCutNext(true)
+					err = newC2.Order(createEnvelope("MESSAGE_4", channelID), 0)
+					Expect(err).NotTo(HaveOccurred())
+
+					By("Wait for node #3 to receive message #4")
+					for _, c := range []*chain{newC2, c3} {
+						Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(3))
+						Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+					}
+
+					By("Connecting node #1 & disconnecting #3")
+					network.disconnect(c3.id)
+					network.connect(c1.id)
+
+					By("Ellect follower #1 to be the leader")
+					network.elect(c1.id)
+					//c1.clock.Increment(interval)
+					//newC2.clock.Increment(interval)
+					//c3.clock.Increment(interval)
+					c1Count := c1.support.WriteBlockCallCount()
+
+					By("Writing message #5 to node #2")
+					newC2.cutter.SetCutNext(true)
+					err = newC2.Order(createEnvelope("MESSAGE_5", channelID), 0)
+					Expect(err).NotTo(HaveOccurred())
+					Eventually(c1.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(c1Count + 1))
+					//for _, c := range []*chain{newC2, c3} {
+					//	Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(3))
+					//	Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+					//}
+
+					//defer newC2.Halt()
+					//c1.clock.Increment(interval)
+					//newC2.clock.Increment(interval)
+					//c3.clock.Increment(interval)
+
+					//for _, c := range []*chain{c3, newC2} {
+					//	Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(5))
+					//	//Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+					//}
+
+					<-time.After(1 * time.Second)
+					By("SUCCESS")
+
+					return
+
+					network.elect(newC2.id)
+
+					newC2.clock.Increment(interval)
+
+					<-time.After(3 * time.Second)
+
+					//Eventually(func() uint64 { return w.SyncCounter }, LongEventualTimeout).Should(Equal(uint64(2)))
+
+					fmt.Println("Hi!!!")
+
+					//network.stop(c2.id)
+					//network.restart(c2.id)
+
+					//c1.cutter.CutNext = true
+					//err = c1.Order(env, 0)
+					//Expect(err).NotTo(HaveOccurred())
+					////Eventually(c1_storage.SnapshotCatchUpEntries, LongEventualTimeout).Should(Equal(3))
+					//for _, c := range []*chain{c1, c2} {
+					//	Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(3))
+					//	Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+					//}
+					//
+					//c1.cutter.CutNext = true
+					//err = c1.Order(env, 0)
+					//Expect(err).NotTo(HaveOccurred())
+					////Eventually(c1_storage.SnapshotCatchUpEntries, LongEventualTimeout).Should(Equal(4))
+					//for _, c := range []*chain{c1, c2} {
+					//	Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(4))
+					//	Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(0))
+					//}
+
+					//fmt.Println(c1_storage)
+
+					//By("Configuring an additional node")
+					//addConsenterUpdate := addConsenterConfigValue()
+					//configEnv := newConfigEnv(channelID, common.HeaderType_CONFIG, newConfigUpdateEnv(channelID, nil, addConsenterUpdate))
+					//c1.cutter.SetCutNext(true)
+					//
+					//By("Sending config transaction")
+					//err := c1.Configure(configEnv, 0)
+					//Expect(err).NotTo(HaveOccurred())
+					//Expect(c1.fakeFields.fakeConfigProposalsReceived.AddCallCount()).To(Equal(1))
+					//Expect(c1.fakeFields.fakeConfigProposalsReceived.AddArgsForCall(0)).To(Equal(float64(1)))
+
+					//network.exec(func(c *chain) {
+					//	if c.id == c2.id {
+					//		return
+					//	}
+					//	Eventually(c.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(1))
+					//	Eventually(c.fakeFields.fakeClusterSize.SetCallCount, LongEventualTimeout).Should(Equal(2))
+					//	Expect(c.fakeFields.fakeClusterSize.SetArgsForCall(1)).To(Equal(float64(4)))
+					//})
+					//
+					//_, raftmetabytes := c1.support.WriteConfigBlockArgsForCall(0)
+					//meta := &common.Metadata{Value: raftmetabytes}
+					//raftmeta, err := etcdraft.ReadBlockMetadata(meta, nil)
+					//Expect(err).NotTo(HaveOccurred())
+					//
+					//By("Starting the new node")
+					//c4 := newChain(timeout, channelID, dataDir, 4, raftmeta, consenters, cryptoProvider, nil, nil)
+					//// if we join a node to existing network, it MUST already obtained blocks
+					//// till the config block that adds this node to cluster.
+					//c4.support.WriteBlock(c1.support.WriteBlockArgsForCall(0))
+					//c4.support.WriteConfigBlock(c1.support.WriteConfigBlockArgsForCall(0))
+					//c4.init()
+					//
+					//network.addChain(c4)
+					//c4.Start()
+
+					// ConfChange is applied to etcd/raft asynchronously, meaning node 4 is not added
+					// to leader's node list right away. An immediate tick does not trigger a heartbeat
+					// being sent to node 4. Therefore, we repeatedly tick the leader until node 4 joins
+					// the cluster successfully.
+					//Eventually(func() <-chan raft.SoftState {
+					//	c1.clock.Increment(interval)
+					//	return c4.observe
+					//}, defaultTimeout).Should(Receive(Equal(raft.SoftState{Lead: 1, RaftState: raft.StateFollower})))
+					//
+					//Eventually(c4.support.WriteBlockCallCount, defaultTimeout).Should(Equal(1))
+					//Eventually(c4.support.WriteConfigBlockCallCount, defaultTimeout).Should(Equal(1))
+					//
+					//By("Sending data blocks to leader")
+					//numOfBlocks := 100
+					//for i := 0; i < numOfBlocks; i++ {
+					//	c1.cutter.SetCutNext(true)
+					//	err := c1.Order(env, 0)
+					//	Expect(err).NotTo(HaveOccurred())
+					//}
+					//
+					//By("Reconnecting the follower node")
+					//network.connect(c2.id)
+					//c1.clock.Increment(interval)
+					//
+					//By("Checking correct synchronization")
+					//network.exec(func(c *chain) {
+					//	Eventually(c.support.WriteBlockCallCount, LongEventualTimeout).Should(Equal(1 + numOfBlocks))
+					//	Eventually(c.support.WriteConfigBlockCallCount, LongEventualTimeout).Should(Equal(1))
+					//})
+				})
+
 			})
 		})
 
@@ -3365,6 +3591,306 @@ type msg struct {
 	sender uint64
 }
 
+func newChainFrom(
+	timeout time.Duration,
+	channel, dataDir string,
+	id uint64,
+	cryptoProvider bccsp.BCCSP,
+	support *consensusmocks.FakeConsenterSupport,
+	haltCallback func(),
+	oldChain *chain,
+) *chain {
+	rpc := &mocks.FakeRPC{}
+	clock := fakeclock.NewFakeClock(time.Now())
+	storage := raft.NewMemoryStorage()
+
+	fakeFields := newFakeMetricsFields()
+
+	opts := etcdraft.Options{
+		RPCTimeout:          oldChain.opts.RPCTimeout,
+		RaftID:              oldChain.opts.RaftID,
+		Clock:               clock,
+		TickInterval:        interval,
+		ElectionTick:        ELECTION_TICK,
+		HeartbeatTick:       HEARTBEAT_TICK,
+		MaxSizePerMsg:       oldChain.opts.MaxSizePerMsg,
+		MaxInflightBlocks:   oldChain.opts.MaxInflightBlocks,
+		BlockMetadata:       oldChain.opts.BlockMetadata,
+		LeaderCheckInterval: oldChain.opts.LeaderCheckInterval,
+		Consenters:          oldChain.opts.Consenters,
+		Logger:              flogging.NewFabricLogger(zap.NewExample()),
+		MemoryStorage:       storage,
+		WALDir:              oldChain.opts.WALDir,
+		SnapDir:             oldChain.opts.SnapDir,
+		Metrics:             oldChain.opts.Metrics,
+	}
+
+	if oldChain.support == nil {
+		support = &consensusmocks.FakeConsenterSupport{}
+		support.ChannelIDReturns(channel)
+		support.SharedConfigReturns(mockOrdererWithBatchTimeout(timeout, nil))
+	}
+	cutter := mockblockcutter.NewReceiver()
+	close(cutter.Block)
+	support.BlockCutterReturns(cutter)
+
+	// upon leader change, lead is reset to 0 before set to actual
+	// new leader, i.e. 1 -> 0 -> 2. Therefore 2 numbers will be
+	// sent on this chan, so we need size to be 2
+	observe := make(chan raft.SoftState, 2)
+
+	configurator := &mocks.FakeConfigurator{}
+	puller := &mocks.FakeBlockPuller{}
+
+	ch := make(chan struct{})
+	close(ch)
+
+	c := &chain{
+		id:           id,
+		support:      support,
+		cutter:       cutter,
+		rpc:          rpc,
+		storage:      storage,
+		observe:      observe,
+		clock:        clock,
+		opts:         opts,
+		unstarted:    ch,
+		stopped:      make(chan struct{}),
+		configurator: configurator,
+		puller:       puller,
+		ledger: map[uint64]*common.Block{
+			0: getSeedBlock(), // Very first block
+		},
+		ledgerHeight:   1,
+		fakeFields:     fakeFields,
+		cryptoProvider: cryptoProvider,
+		msgBuffer:      make(chan *msg, 500),
+		haltCallback:   haltCallback,
+	}
+
+	// receives normal blocks and metadata and appends it into
+	// the ledger struct to simulate write behaviour
+	appendNormalBlockToLedger := func(b *common.Block, meta []byte) {
+		c.ledgerLock.Lock()
+		defer c.ledgerLock.Unlock()
+
+		b = proto.Clone(b).(*common.Block)
+		bytes, err := proto.Marshal(&common.Metadata{Value: meta})
+		Expect(err).NotTo(HaveOccurred())
+		b.Metadata.Metadata[common.BlockMetadataIndex_ORDERER] = bytes
+
+		lastConfigValue := protoutil.MarshalOrPanic(&common.LastConfig{Index: c.lastConfigBlockNumber})
+		b.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+			Value: lastConfigValue,
+		})
+
+		c.ledger[b.Header.Number] = b
+		if c.ledgerHeight < b.Header.Number+1 {
+			c.ledgerHeight = b.Header.Number + 1
+		}
+	}
+
+	// receives config blocks and metadata and appends it into
+	// the ledger struct to simulate write behaviour
+	appendConfigBlockToLedger := func(b *common.Block, meta []byte) {
+		c.ledgerLock.Lock()
+		defer c.ledgerLock.Unlock()
+
+		b = proto.Clone(b).(*common.Block)
+		bytes, err := proto.Marshal(&common.Metadata{Value: meta})
+		Expect(err).NotTo(HaveOccurred())
+		b.Metadata.Metadata[common.BlockMetadataIndex_ORDERER] = bytes
+
+		c.lastConfigBlockNumber = b.Header.Number
+
+		lastConfigValue := protoutil.MarshalOrPanic(&common.LastConfig{Index: c.lastConfigBlockNumber})
+		b.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+			Value: lastConfigValue,
+		})
+
+		c.ledger[b.Header.Number] = b
+		if c.ledgerHeight < b.Header.Number+1 {
+			c.ledgerHeight = b.Header.Number + 1
+		}
+	}
+
+	c.support.WriteBlockStub = appendNormalBlockToLedger
+	c.support.WriteConfigBlockStub = appendConfigBlockToLedger
+
+	// returns current ledger height
+	c.support.HeightStub = func() uint64 {
+		c.ledgerLock.RLock()
+		defer c.ledgerLock.RUnlock()
+		return c.ledgerHeight
+	}
+
+	// reads block from the ledger
+	c.support.BlockStub = func(number uint64) *common.Block {
+		c.ledgerLock.RLock()
+		defer c.ledgerLock.RUnlock()
+		return c.ledger[number]
+	}
+
+	// consume ingress messages for chain
+	go func() {
+		for msg := range c.msgBuffer {
+			c.Consensus(msg.req, msg.sender)
+		}
+	}()
+
+	return c
+}
+
+//func newChainFrom(
+//	timeout time.Duration,
+//	channel, dataDir string,
+//	id uint64,
+//	cryptoProvider bccsp.BCCSP,
+//	support *consensusmocks.FakeConsenterSupport,
+//	haltCallback func(),
+//	oldChain *chain,
+//) *chain {
+//	rpc := &mocks.FakeRPC{}
+//	clock := fakeclock.NewFakeClock(time.Now())
+//	storage := raft.NewMemoryStorage()
+//
+//	fakeFields := newFakeMetricsFields()
+//
+//	opts := etcdraft.Options{
+//		RPCTimeout:          oldChain.opts.RPCTimeout,
+//		RaftID:              oldChain.opts.RaftID,
+//		Clock:               clock,
+//		TickInterval:        interval,
+//		ElectionTick:        ELECTION_TICK,
+//		HeartbeatTick:       HEARTBEAT_TICK,
+//		MaxSizePerMsg:       oldChain.opts.MaxSizePerMsg,
+//		MaxInflightBlocks:   oldChain.opts.MaxInflightBlocks,
+//		BlockMetadata:       oldChain.opts.BlockMetadata,
+//		LeaderCheckInterval: oldChain.opts.LeaderCheckInterval,
+//		Consenters:          oldChain.opts.Consenters,
+//		Logger:              flogging.NewFabricLogger(zap.NewExample()),
+//		MemoryStorage:       storage,
+//		WALDir:              oldChain.opts.WALDir,
+//		SnapDir:             oldChain.opts.SnapDir,
+//		Metrics:             oldChain.opts.Metrics,
+//	}
+//
+//	if oldChain.support == nil {
+//		support = &consensusmocks.FakeConsenterSupport{}
+//		support.ChannelIDReturns(channel)
+//		support.SharedConfigReturns(mockOrdererWithBatchTimeout(timeout, nil))
+//	}
+//	cutter := mockblockcutter.NewReceiver()
+//	close(cutter.Block)
+//	support.BlockCutterReturns(cutter)
+//
+//	// upon leader change, lead is reset to 0 before set to actual
+//	// new leader, i.e. 1 -> 0 -> 2. Therefore 2 numbers will be
+//	// sent on this chan, so we need size to be 2
+//	observe := make(chan raft.SoftState, 2)
+//
+//	configurator := &mocks.FakeConfigurator{}
+//	puller := &mocks.FakeBlockPuller{}
+//
+//	ch := make(chan struct{})
+//	close(ch)
+//
+//	c := &chain{
+//		id:           id,
+//		support:      support,
+//		cutter:       cutter,
+//		rpc:          rpc,
+//		storage:      storage,
+//		observe:      observe,
+//		clock:        clock,
+//		opts:         opts,
+//		unstarted:    ch,
+//		stopped:      make(chan struct{}),
+//		configurator: configurator,
+//		puller:       puller,
+//		ledger: map[uint64]*common.Block{
+//			0: getSeedBlock(), // Very first block
+//		},
+//		ledgerHeight:   1,
+//		fakeFields:     fakeFields,
+//		cryptoProvider: cryptoProvider,
+//		msgBuffer:      make(chan *msg, 500),
+//		haltCallback:   haltCallback,
+//	}
+//
+//	// receives normal blocks and metadata and appends it into
+//	// the ledger struct to simulate write behaviour
+//	appendNormalBlockToLedger := func(b *common.Block, meta []byte) {
+//		c.ledgerLock.Lock()
+//		defer c.ledgerLock.Unlock()
+//
+//		b = proto.Clone(b).(*common.Block)
+//		bytes, err := proto.Marshal(&common.Metadata{Value: meta})
+//		Expect(err).NotTo(HaveOccurred())
+//		b.Metadata.Metadata[common.BlockMetadataIndex_ORDERER] = bytes
+//
+//		lastConfigValue := protoutil.MarshalOrPanic(&common.LastConfig{Index: c.lastConfigBlockNumber})
+//		b.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+//			Value: lastConfigValue,
+//		})
+//
+//		c.ledger[b.Header.Number] = b
+//		if c.ledgerHeight < b.Header.Number+1 {
+//			c.ledgerHeight = b.Header.Number + 1
+//		}
+//	}
+//
+//	// receives config blocks and metadata and appends it into
+//	// the ledger struct to simulate write behaviour
+//	appendConfigBlockToLedger := func(b *common.Block, meta []byte) {
+//		c.ledgerLock.Lock()
+//		defer c.ledgerLock.Unlock()
+//
+//		b = proto.Clone(b).(*common.Block)
+//		bytes, err := proto.Marshal(&common.Metadata{Value: meta})
+//		Expect(err).NotTo(HaveOccurred())
+//		b.Metadata.Metadata[common.BlockMetadataIndex_ORDERER] = bytes
+//
+//		c.lastConfigBlockNumber = b.Header.Number
+//
+//		lastConfigValue := protoutil.MarshalOrPanic(&common.LastConfig{Index: c.lastConfigBlockNumber})
+//		b.Metadata.Metadata[common.BlockMetadataIndex_LAST_CONFIG] = protoutil.MarshalOrPanic(&common.Metadata{
+//			Value: lastConfigValue,
+//		})
+//
+//		c.ledger[b.Header.Number] = b
+//		if c.ledgerHeight < b.Header.Number+1 {
+//			c.ledgerHeight = b.Header.Number + 1
+//		}
+//	}
+//
+//	c.support.WriteBlockStub = appendNormalBlockToLedger
+//	c.support.WriteConfigBlockStub = appendConfigBlockToLedger
+//
+//	// returns current ledger height
+//	c.support.HeightStub = func() uint64 {
+//		c.ledgerLock.RLock()
+//		defer c.ledgerLock.RUnlock()
+//		return c.ledgerHeight
+//	}
+//
+//	// reads block from the ledger
+//	c.support.BlockStub = func(number uint64) *common.Block {
+//		c.ledgerLock.RLock()
+//		defer c.ledgerLock.RUnlock()
+//		return c.ledger[number]
+//	}
+//
+//	// consume ingress messages for chain
+//	go func() {
+//		for msg := range c.msgBuffer {
+//			c.Consensus(msg.req, msg.sender)
+//		}
+//	}()
+//
+//	return c
+//}
+
 func newChain(
 	timeout time.Duration,
 	channel, dataDir string,
@@ -3529,6 +4055,30 @@ func (c *chain) init() {
 	)
 	Expect(err).NotTo(HaveOccurred())
 	c.Chain = ch
+}
+
+func (c *chain) restart() {
+
+	//c.stopped = make(chan struct{})
+	////ledger: map[uint64]*common.Block{
+	////	0: getSeedBlock(), // Very first block
+	////},
+	//c.msgBuffer = make(chan *msg, 500)
+	////msgBuffer:      make(chan *msg, 500),
+	//
+	//ch := make(chan struct{})
+	//close(ch)
+	//c.unstarted = ch
+	//
+	//// consume ingress messages for chain
+	//go func() {
+	//	for msg := range c.msgBuffer {
+	//		c.Consensus(msg.req, msg.sender)
+	//	}
+	//}()
+	//
+	//c.unstarted = nil
+	//c.Start()
 }
 
 func (c *chain) start() {
@@ -3761,6 +4311,33 @@ func (n *network) start(ids ...uint64) {
 	}
 }
 
+func (n *network) restart(ids ...uint64) {
+
+	for _, id := range ids {
+		//c := n.chains[id]
+
+		//newChain(c)
+
+		// When the Raft node bootstraps, it produces a ConfChange
+		// to add itself, which needs to be consumed with Ready().
+		// If there are pending configuration changes in raft,
+		// it refused to campaign, no matter how many ticks supplied.
+		// This is not a problem in production code because eventually
+		// raft.Ready will be consumed as real time goes by.
+		//
+		// However, this is problematic when using fake clock and artificial
+		// ticks. Instead of ticking raft indefinitely until raft.Ready is
+		// consumed, this check is added to indirectly guarantee
+		// that first ConfChange is actually consumed and we can safely
+		// proceed to tick raft.
+		Eventually(func() error {
+			_, err := n.chains[id].storage.Entries(1, 1, 1)
+			return err
+		}, LongEventualTimeout).ShouldNot(HaveOccurred())
+		Eventually(n.chains[id].WaitReady, LongEventualTimeout).ShouldNot(HaveOccurred())
+	}
+}
+
 func (n *network) stop(ids ...uint64) {
 	nodes := ids
 	if len(nodes) == 0 {
@@ -3852,6 +4429,7 @@ func (n *network) elect(id uint64) {
 	// skip observing leader change on followers if the same leader is elected as the previous one,
 	// because this may happen too quickly from a slow follower's point of view, and 0 -> X transition
 	// may not be omitted at all.
+	fmt.Println("########### 1")
 	observeFollowers := id != n.leader
 	candidate := n.chains[id]
 	var followers []*chain
@@ -3861,26 +4439,40 @@ func (n *network) elect(id uint64) {
 		}
 	}
 	n.RUnlock()
+	fmt.Println("########### 2")
 
 	// Send node an artificial MsgTimeoutNow to emulate leadership transfer.
-	fmt.Fprintf(GinkgoWriter, "Send artificial MsgTimeoutNow to elect node %d\n", id)
-	candidate.Consensus(&orderer.ConsensusRequest{Payload: protoutil.MarshalOrPanic(&raftpb.Message{Type: raftpb.MsgTimeoutNow, To: id})}, 0)
-	Eventually(candidate.observe, LongEventualTimeout).Should(Receive(StateEqual(id, raft.StateLeader)))
+	//fmt.Fprintf(GinkgoWriter, "Send artificial MsgTimeoutNow to elect node %d\n", id)
+	//candidate.Consensus(&orderer.ConsensusRequest{Payload: protoutil.MarshalOrPanic(&raftpb.Message{Type: raftpb.MsgTimeoutNow, To: id})}, 0)
+	//Eventually(candidate.observe, LongEventualTimeout).Should(Receive(StateEqual(id, raft.StateLeader)))
+	Eventually(func() <-chan raft.SoftState {
+		fmt.Fprintf(GinkgoWriter, "Send artificial MsgTimeoutNow to elect node %d\n", id)
+		candidate.Consensus(&orderer.ConsensusRequest{Payload: protoutil.MarshalOrPanic(&raftpb.Message{Type: raftpb.MsgTimeoutNow, To: id})}, 0)
+		return candidate.observe
+	}, LongEventualTimeout).Should(Receive(StateEqual(id, raft.StateLeader)))
+	fmt.Println("########### 3")
 
 	n.Lock()
 	n.leader = id
 	n.Unlock()
+	fmt.Println("########### 4")
+	//<-time.After(100 * time.Millisecond)
 
 	if !observeFollowers {
 		return
 	}
 
+	fmt.Println("########### 5")
+
 	// now observe leader change on other nodes
 	for _, c := range followers {
+		fmt.Println("########### 6")
+		//<-time.After(100 * time.Millisecond)
 		if c.id == id {
 			continue
 		}
-
+		fmt.Println("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+		fmt.Println("########### 7")
 		select {
 		case <-c.stopped: // skip check if node n is stopped
 		case <-c.unstarted: // skip check if node is not started yet
@@ -3889,7 +4481,10 @@ func (n *network) elect(id uint64) {
 				Eventually(c.observe, LongEventualTimeout).Should(Receive(StateEqual(id, raft.StateFollower)))
 			}
 		}
+		fmt.Println("########### 8")
+		//<-time.After(100 * time.Millisecond)
 	}
+	fmt.Println("########### 9")
 }
 
 // sets the configEnv var declared above
@@ -3991,4 +4586,104 @@ func (stmatcher *StateMatcher) NegatedFailureMessage(actual interface{}) (messag
 func noOpBlockPuller() (etcdraft.BlockPuller, error) {
 	bp := &mocks.FakeBlockPuller{}
 	return bp, nil
+}
+
+func checkLastModifiedTime(dirPath string) time.Time {
+	files, err := os.ReadDir(dirPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	dirInfo, _ := os.Stat(dirPath)
+	modifiedTime := dirInfo.ModTime()
+
+	for _, file := range files {
+		filePath := path.Join(dirPath, file.Name())
+		fileInfo, _ := os.Stat(filePath)
+		fileModifiedTime := fileInfo.ModTime()
+		if modifiedTime.Before(fileModifiedTime) {
+			modifiedTime = fileModifiedTime
+		}
+	}
+
+	return modifiedTime
+}
+
+func copyDir(sourceDir string, destinationDir string) {
+	// Create the destination directory if it doesn't exist
+	err := os.MkdirAll(destinationDir, 0755)
+	if err != nil {
+		panic(err)
+	}
+
+	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip the source directory itself
+		if path == sourceDir {
+			return nil
+		}
+
+		// Construct the corresponding destination path
+		destPath := filepath.Join(destinationDir, path[len(sourceDir):])
+
+		if info.IsDir() {
+			// Create the corresponding destination directory
+			err := os.MkdirAll(destPath, info.Mode())
+			if err != nil {
+				return err
+			}
+		} else {
+			// Copy the file from source to destination
+			err := copyFile(path, destPath)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Directory copied successfully.")
+}
+
+func copyFile(sourcePath, destPath string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	destination, err := os.Create(destPath)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	if err != nil {
+		return err
+	}
+
+	err = destination.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func createEnvelope(message string, channelID string) *common.Envelope {
+	return &common.Envelope{
+		Payload: marshalOrPanic(&common.Payload{
+			Header: &common.Header{ChannelHeader: marshalOrPanic(&common.ChannelHeader{Type: int32(common.HeaderType_MESSAGE), ChannelId: channelID})},
+			Data:   []byte(message),
+		}),
+	}
 }

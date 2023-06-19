@@ -59,6 +59,10 @@ type node struct {
 	raft.Node
 }
 
+func (n *node) GetStorage() *RaftStorage {
+	return n.storage
+}
+
 func (n *node) start(fresh, join bool) {
 	raftPeers := RaftPeers(n.metadata.ConsenterIds)
 	n.logger.Debugf("Starting raft node: #peers: %v", len(raftPeers))
