@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -43,6 +44,7 @@ type GRPCServer struct {
 // NewGRPCServer creates a new implementation of a GRPCServer given a
 // listen address
 func NewGRPCServer(address string, serverConfig ServerConfig) (*GRPCServer, error) {
+	fmt.Printf(">>> NewGRPCServer %s, %v", address, serverConfig)
 	if address == "" {
 		return nil, errors.New("missing address parameter")
 	}
@@ -57,6 +59,23 @@ func NewGRPCServer(address string, serverConfig ServerConfig) (*GRPCServer, erro
 // NewGRPCServerFromListener creates a new implementation of a GRPCServer given
 // an existing net.Listener instance using default keepalive
 func NewGRPCServerFromListener(listener net.Listener, serverConfig ServerConfig) (*GRPCServer, error) {
+	fmt.Printf("\n\n\nNewGRPCServerFromListener serverConfig = %v\n", &serverConfig)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.ConnectionTimeout = %v\n", serverConfig.ConnectionTimeout)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.MaxRecvMsgSize = %v\n", serverConfig.MaxRecvMsgSize)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.MaxSendMsgSize = %v\n", serverConfig.MaxSendMsgSize)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.VerifyCertificate = %v\n", serverConfig.SecOpts.VerifyCertificate)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.Certificate = %v\n", serverConfig.SecOpts.Certificate)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.Key = %v\n", serverConfig.SecOpts.Key)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.ServerRootCAs = %v\n", serverConfig.SecOpts.ServerRootCAs)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.ClientRootCAs = %v\n", serverConfig.SecOpts.ClientRootCAs)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.UseTLS = %v\n", serverConfig.SecOpts.UseTLS)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.RequireClientCert = %v\n", serverConfig.SecOpts.RequireClientCert)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.CipherSuites = %v\n", serverConfig.SecOpts.CipherSuites)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.TimeShift = %v\n", serverConfig.SecOpts.TimeShift)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.serverConfig.SecOpts.ServerNameOverride = %v\n", serverConfig.SecOpts.ServerNameOverride)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.KaOpts = %v\n", serverConfig.KaOpts)
+	fmt.Printf("\nNewGRPCServerFromListener serverConfig.ServerStatsHandler = %v\n", serverConfig.ServerStatsHandler)
+
 	grpcServer := &GRPCServer{
 		address:  listener.Addr().String(),
 		listener: listener,

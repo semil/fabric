@@ -124,6 +124,7 @@ func (d *Deliverer) Initialize() {
 
 // DeliverBlocks used to pull out blocks from the ordering service to distribute them across peers
 func (d *Deliverer) DeliverBlocks() {
+	d.Logger.Warnf("!!! DeliverBlocks")
 	failureCounter := 0
 	totalDuration := time.Duration(0)
 

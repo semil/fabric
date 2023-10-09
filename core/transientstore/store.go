@@ -88,7 +88,9 @@ type RwsetScanner struct {
 func NewStoreProvider(path string) (StoreProvider, error) {
 	// Ensure the routine is invoked while the peer is down.
 	lockPath := filepath.Join(filepath.Dir(path), transientStorageLockName)
+	logger.Info("??? 1 NewStoreProvider 1")
 	lock := leveldbhelper.NewFileLock(lockPath)
+	logger.Info("??? 1 NewStoreProvider 2")
 	if err := lock.Lock(); err != nil {
 		return nil, errors.WithMessage(err, "as another peer node command is executing,"+
 			" wait for that command to complete its execution or terminate it before retrying")

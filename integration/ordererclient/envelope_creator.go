@@ -25,7 +25,8 @@ func CreateBroadcastEnvelope(n *nwo.Network, entity interface{}, channel string,
 	Expect(signer).NotTo(BeNil())
 
 	env, err := protoutil.CreateSignedEnvelope(
-		common.HeaderType_MESSAGE,
+		//common.HeaderType_MESSAGE,
+		common.HeaderType_ENDORSER_TRANSACTION,
 		channel,
 		signer,
 		&common.Envelope{Payload: data},

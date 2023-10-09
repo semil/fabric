@@ -125,6 +125,7 @@ RecvLoop: // Loop until the endpoint is refreshed, or there is an error on the c
 }
 
 func (br *BlockReceiver) processMsg(msg *orderer.DeliverResponse) (uint64, error) {
+	fmt.Printf(">>> processMsg %v\n", msg)
 	switch t := msg.GetType().(type) {
 	case *orderer.DeliverResponse_Status:
 		if t.Status == common.Status_SUCCESS {

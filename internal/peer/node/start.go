@@ -287,16 +287,19 @@ func serve(args []string) error {
 			logger.Fatalf("Failed to set TLS client certificate (%s)", err)
 		}
 		cs.SetClientCertificate(clientCert)
+		logger.Info("??? 1")
 	}
-
+	logger.Info("??? 1 1")
 	transientStoreProvider, err := transientstore.NewStoreProvider(
 		filepath.Join(coreconfig.GetPath("peer.fileSystemPath"), "transientstore"),
 	)
+	logger.Info("??? 1 2")
 	if err != nil {
 		return errors.WithMessage(err, "failed to open transient store")
 	}
 
 	deliverServiceConfig := deliverservice.GlobalConfig()
+	logger.Info("??? 2")
 
 	peerInstance := &peer.Peer{
 		ServerConfig:             serverConfig,
@@ -315,6 +318,7 @@ func serve(args []string) error {
 
 	mspID := coreConfig.LocalMSPID
 	localMSP := mgmt.GetLocalMSP(factory.GetDefault())
+	logger.Info("??? 3")
 
 	signingIdentity, err := localMSP.GetDefaultSigningIdentity()
 	if err != nil {
@@ -437,6 +441,7 @@ func serve(args []string) error {
 		chaincodeCustodian,
 		ebMetadataProvider,
 	)
+	logger.Info("??? 4")
 
 	txProcessors := map[cb.HeaderType]ledger.CustomTxProcessor{
 		cb.HeaderType_CONFIG: &peer.ConfigTxProcessor{},
@@ -503,6 +508,7 @@ func serve(args []string) error {
 	}
 
 	metrics := deliver.NewMetrics(metricsProvider)
+	logger.Info("??? 5")
 	abServer := &peer.DeliverServer{
 		DeliverHandler: deliver.NewHandler(
 			&peer.DeliverChainManager{Peer: peerInstance},

@@ -23,7 +23,7 @@ peer:
       interval: 60s
       timeout: 20s
     deliveryClient:
-      interval: 60s
+      interval: 59s
       timeout: 20s
   gossip:
     bootstrap: 127.0.0.1:{{ .PeerPort Peer "Listen" }}

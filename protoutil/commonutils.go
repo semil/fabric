@@ -9,6 +9,7 @@ package protoutil
 import (
 	"crypto/rand"
 	"fmt"
+	mathrand "math/rand"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -113,6 +114,7 @@ func MakeChannelHeader(headerType cb.HeaderType, version int32, chainID string, 
 		},
 		ChannelId: chainID,
 		Epoch:     epoch,
+		TxId:      fmt.Sprint(mathrand.Float64()),
 	}
 }
 

@@ -8,7 +8,7 @@ package validation
 
 import (
 	"bytes"
-
+	"fmt"
 	"github.com/hyperledger/fabric-protos-go/common"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/bccsp"
@@ -291,6 +291,7 @@ func ValidateTransaction(e *common.Envelope, cryptoProvider bccsp.BCCSP) (*commo
 			shdr.Creator)
 
 		if err != nil {
+			panic(fmt.Sprintf("chdr:%v ; shdr:%v", chdr, shdr))
 			putilsLogger.Errorf("CheckTxID returns err %s", err)
 			return nil, pb.TxValidationCode_BAD_PROPOSAL_TXID
 		}

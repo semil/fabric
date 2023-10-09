@@ -114,6 +114,7 @@ func (d *BFTDeliverer) BlockProgress() (uint64, time.Time) {
 }
 
 func (d *BFTDeliverer) DeliverBlocks() {
+	d.Logger.Warnf("!!! BFTDeliverer DeliverBlocks")
 	var err error
 
 	d.lastBlockSourceIndex = -1

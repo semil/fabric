@@ -84,6 +84,8 @@ func GetChannelIDFromBlockBytes(bytes []byte) (string, error) {
 // GetChannelIDFromBlock returns channel ID in the block
 func GetChannelIDFromBlock(block *cb.Block) (string, error) {
 	if block == nil || block.Data == nil || block.Data.Data == nil || len(block.Data.Data) == 0 {
+		fmt.Printf(">>> block fail %v", block)
+		panic("@")
 		return "", errors.New("failed to retrieve channel id - block is empty")
 	}
 	var err error
@@ -236,6 +238,7 @@ type policy interface { // copied from common.policies to avoid circular import.
 
 func BlockSignatureVerifier(bftEnabled bool, consenters []*cb.Consenter, policy policy) BlockVerifierFunc {
 	return func(header *cb.BlockHeader, metadata *cb.BlockMetadata) error {
+		fmt.Printf("$$$ 1\n")
 		if len(metadata.GetMetadata()) < int(cb.BlockMetadataIndex_SIGNATURES)+1 {
 			return errors.Errorf("no signatures in block metadata")
 		}

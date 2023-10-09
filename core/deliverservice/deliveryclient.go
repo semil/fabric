@@ -101,6 +101,7 @@ func NewDeliverService(conf *Config) DeliverService {
 // that spawns in go routine to read new blocks starting from the position provided by ledger
 // info instance.
 func (d *deliverServiceImpl) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, finalizer func()) error {
+	logger.Warnf("StartDeliverForChannel !!!")
 	d.lock.Lock()
 	defer d.lock.Unlock()
 

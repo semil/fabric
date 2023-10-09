@@ -212,10 +212,14 @@ func Main() {
 		},
 	}))
 
+	logger.Warnf(">>> orderer main 1")
 	if !reuseGrpcListener {
+		logger.Warnf(">>> orderer main 2")
 		logger.Info("Starting cluster listener on", clusterGRPCServer.Address())
 		go clusterGRPCServer.Start()
 	}
+	//<-time.After(1 * time.Second)
+	logger.Warnf(">>> orderer main 3")
 
 	if conf.General.Profile.Enabled {
 		go initializeProfilingService(conf)
@@ -377,6 +381,8 @@ func configureClusterListener(conf *localconfig.TopLevel, generalConf comm.Serve
 			Key:               key,
 		},
 	}
+
+	logger.Infof(">>> bindAddr = %s ; %v", bindAddr, serverConf.StreamInterceptors)
 
 	srv, err := comm.NewGRPCServer(bindAddr, serverConf)
 	if err != nil {

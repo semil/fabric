@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package blocksprovider
 
 import (
+	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -114,6 +116,7 @@ func (hr *BFTHeaderReceiver) DeliverHeaders() {
 			err := hr.blockVerifier.VerifyBlockAttestation(hr.chainID, t.Block)
 			if err != nil {
 				hr.logger.Warningf("[%s][%s] Last block verification failed, blockNum [%d], err: %s", hr.chainID, hr.endpoint, blockNum, err)
+				fmt.Printf("<><> %s", reflect.TypeOf(hr.blockVerifier))
 				return
 			}
 
