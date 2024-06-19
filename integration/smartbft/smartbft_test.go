@@ -2028,6 +2028,131 @@ var _ = Describe("EndToEnd Smart BFT configuration test", func() {
 			Eventually(ordererRunners[2].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("deleteRequest"))
 			Eventually(ordererRunners[3].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("deleteRequest"))
 		})
+
+		It("default delivery client is cluster", func() {
+			channel := "testchannel1"
+			By("Create network")
+			networkConfig := nwo.MultiNodeSmartBFT()
+			networkConfig.Channels = nil
+			network = nwo.New(networkConfig, testDir, client, StartPort(), components)
+			network.GenerateConfigTree()
+			network.Bootstrap()
+
+			By("Start orderers")
+			var ordererRunners []*ginkgomon.Runner
+			for _, orderer := range network.Orderers {
+				runner := network.OrdererRunner(orderer, "FABRIC_LOGGING_SPEC=debug")
+				ordererRunners = append(ordererRunners, runner)
+				proc := ifrit.Invoke(runner)
+				ordererProcesses = append(ordererProcesses, proc)
+				Eventually(proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
+			}
+
+			By("Start peer")
+			peer := network.Peers[0]
+			peerRunner := network.PeerRunner(peer)
+			peerRunner.Command.Env = append(peerRunner.Command.Env, "FABRIC_LOGGING_SPEC=debug")
+			peerProcesses = ifrit.Invoke(peerRunner)
+			Eventually(peerProcesses.Ready(), network.EventuallyTimeout).Should(BeClosed())
+
+			By("Join network to channel")
+			joinChannel(network, channel)
+
+			By("Waiting for followers to see the leader")
+			Eventually(ordererRunners[1].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[2].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[3].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+
+			By("Joining peer to channel")
+			network.JoinChannel(channel, network.Orderers[0], peer)
+
+			By("Validating BlockDeliverer type")
+			Eventually(peerRunner.Err(), network.EventuallyTimeout).Should(gbytes.Say("Creating a BFT \\(byzantine fault tolerant\\) BlockDeliverer"))
+		})
+
+		It("cluster delivery client is creating a BFT delivery client", func() {
+			channel := "testchannel1"
+			By("Create network")
+			networkConfig := nwo.MultiNodeSmartBFT()
+			networkConfig.Channels = nil
+			network = nwo.New(networkConfig, testDir, client, StartPort(), components)
+			network.PeerDeliveryClientPolicy = "cluster"
+			network.GenerateConfigTree()
+			network.Bootstrap()
+
+			By("Start orderers")
+			var ordererRunners []*ginkgomon.Runner
+			for _, orderer := range network.Orderers {
+				runner := network.OrdererRunner(orderer, "FABRIC_LOGGING_SPEC=debug")
+				ordererRunners = append(ordererRunners, runner)
+				proc := ifrit.Invoke(runner)
+				ordererProcesses = append(ordererProcesses, proc)
+				Eventually(proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
+			}
+
+			By("Start peer")
+			peer := network.Peers[0]
+			peerRunner := network.PeerRunner(peer)
+			peerRunner.Command.Env = append(peerRunner.Command.Env, "FABRIC_LOGGING_SPEC=debug")
+			peerProcesses = ifrit.Invoke(peerRunner)
+			Eventually(peerProcesses.Ready(), network.EventuallyTimeout).Should(BeClosed())
+
+			By("Join network to channel")
+			joinChannel(network, channel)
+
+			By("Waiting for followers to see the leader")
+			Eventually(ordererRunners[1].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[2].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[3].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+
+			By("Joining peer to channel")
+			network.JoinChannel(channel, network.Orderers[0], peer)
+
+			By("Validating BlockDeliverer type")
+			Eventually(peerRunner.Err(), network.EventuallyTimeout).Should(gbytes.Say("Creating a BFT \\(byzantine fault tolerant\\) BlockDeliverer"))
+		})
+
+		It("simple delivery client is creating a CFT delivery client", func() {
+			channel := "testchannel1"
+			By("Create network")
+			networkConfig := nwo.MultiNodeSmartBFT()
+			networkConfig.Channels = nil
+			network = nwo.New(networkConfig, testDir, client, StartPort(), components)
+			network.PeerDeliveryClientPolicy = "simple"
+			network.GenerateConfigTree()
+			network.Bootstrap()
+
+			By("Start orderers")
+			var ordererRunners []*ginkgomon.Runner
+			for _, orderer := range network.Orderers {
+				runner := network.OrdererRunner(orderer, "FABRIC_LOGGING_SPEC=debug")
+				ordererRunners = append(ordererRunners, runner)
+				proc := ifrit.Invoke(runner)
+				ordererProcesses = append(ordererProcesses, proc)
+				Eventually(proc.Ready(), network.EventuallyTimeout).Should(BeClosed())
+			}
+
+			By("Start peer")
+			peer := network.Peers[0]
+			peerRunner := network.PeerRunner(peer)
+			peerRunner.Command.Env = append(peerRunner.Command.Env, "FABRIC_LOGGING_SPEC=debug")
+			peerProcesses = ifrit.Invoke(peerRunner)
+			Eventually(peerProcesses.Ready(), network.EventuallyTimeout).Should(BeClosed())
+
+			By("Join network to channel")
+			joinChannel(network, channel)
+
+			By("Waiting for followers to see the leader")
+			Eventually(ordererRunners[1].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[2].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+			Eventually(ordererRunners[3].Err(), network.EventuallyTimeout, time.Second).Should(gbytes.Say("Message from 1"))
+
+			By("Joining peer to channel")
+			network.JoinChannel(channel, network.Orderers[0], peer)
+
+			By("Validating BlockDeliverer type")
+			Eventually(peerRunner.Err(), network.EventuallyTimeout).Should(gbytes.Say("Creating a CFT \\(crash fault tolerant\\) BlockDeliverer"))
+		})
 	})
 })
 
